@@ -25,6 +25,7 @@ class TmcstepperRecipe(ConanFile):
 
     def configure(self):
         self.options["viam-cpp-sdk"].shared = False
+        self.options["libgpiod"].enable_bindings_cxx = True
 
     def generate(self):
         deps = CMakeDeps(self)
@@ -43,3 +44,4 @@ class TmcstepperRecipe(ConanFile):
 
     def requirements(self):
         self.requires("viam-cpp-sdk/0.33.1")
+        self.requires("libgpiod/2.1")

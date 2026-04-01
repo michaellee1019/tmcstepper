@@ -11,6 +11,7 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
 find_package(viam-cpp-sdk CONFIG REQUIRED COMPONENTS viamsdk)
+find_package(libgpiod CONFIG REQUIRED)
 
 add_executable(tmcstepper
     main.cpp
@@ -21,6 +22,7 @@ target_include_directories(tmcstepper PUBLIC src)
 
 target_link_libraries(tmcstepper
     viam-cpp-sdk::viamsdk
+    libgpiod::gpiodcxx
     Threads::Threads
 )
 

@@ -20,7 +20,7 @@ int main(int argc, char** argv) try {
     // Write general log statements using the VIAM_SDK_LOG macro.
     VIAM_SDK_LOG(info) << "Starting up tmcstepper module";
 
-    viam::sdk::Model model("490b556e-1c8e-4597-9ec2-c0a64f2ec6cf", "tmcstepper", "tmc2209");
+    viam::sdk::Model model("michaellee1019", "tmcstepper", "tmc2209");
 
 
     auto mr = std::make_shared<viam::sdk::ModelRegistration>(
