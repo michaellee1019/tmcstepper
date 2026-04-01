@@ -93,10 +93,10 @@ Tmc2209::Tmc2209(const viam::sdk::Dependencies& deps, const viam::sdk::ResourceC
     output_settings.set_direction(::gpiod::line::direction::OUTPUT);
     output_settings.set_output_value(::gpiod::line::value::INACTIVE);
 
-    auto builder = chip.prepare_request()
-                       .set_consumer("tmcstepper-tmc2209")
-                       .add_line_settings(step_offset_, output_settings)
-                       .add_line_settings(dir_offset_, output_settings);
+    auto builder = chip.prepare_request();
+    builder.set_consumer("tmcstepper-tmc2209");
+    builder.add_line_settings(step_offset_, output_settings);
+    builder.add_line_settings(dir_offset_, output_settings);
 
     if (has_enn_) {
         ::gpiod::line_settings enn_settings;
@@ -105,13 +105,12 @@ Tmc2209::Tmc2209(const viam::sdk::Dependencies& deps, const viam::sdk::ResourceC
         builder.add_line_settings(enn_offset_, enn_settings);
     }
 
-    gpio_request_ = builder.do_request();
+    gpio_request_.emplace(builder.do_request());
 
-    // ENN is active low: ACTIVE (high) = disabled
     if (has_enn_) {
-        gpio_request_.set_value(enn_offset_, ::gpiod::line::value::ACTIVE);
+        gpio_request_->set_value(enn_offset_, ::gpiod::line::value::ACTIVE);
     }
-    gpio_request_.set_value(step_offset_, ::gpiod::line::value::INACTIVE);
+    gpio_request_->set_value(step_offset_, ::gpiod::line::value::INACTIVE);
 
     step_position_.store(0);
     target_step_position_.store(0);
@@ -135,25 +134,25 @@ uint64_t Tmc2209::rpm_to_freq_hz(double rpm) const {
 }
 
 void Tmc2209::start_stepping(bool forward, uint64_t freq_hz) {
-    gpio_request_.set_value(dir_offset_,
+    gpio_request_->set_value(dir_offset_,
                             forward ? ::gpiod::line::value::ACTIVE
                                     : ::gpiod::line::value::INACTIVE);
     if (has_enn_) {
-        gpio_request_.set_value(enn_offset_, ::gpiod::line::value::INACTIVE);
+        gpio_request_->set_value(enn_offset_, ::gpiod::line::value::INACTIVE);
     }
 
     cancel_flag_.store(false);
     stepping_thread_ = std::thread([this, freq_hz]() {
         int64_t target = target_step_position_.load();
-        bool fwd = gpio_request_.get_value(dir_offset_) == ::gpiod::line::value::ACTIVE;
+        bool fwd = gpio_request_->get_value(dir_offset_) == ::gpiod::line::value::ACTIVE;
         step_loop(target, fwd, freq_hz);
     });
 }
 
 void Tmc2209::stop_hardware() {
-    gpio_request_.set_value(step_offset_, ::gpiod::line::value::INACTIVE);
+    gpio_request_->set_value(step_offset_, ::gpiod::line::value::INACTIVE);
     if (has_enn_) {
-        gpio_request_.set_value(enn_offset_, ::gpiod::line::value::ACTIVE);
+        gpio_request_->set_value(enn_offset_, ::gpiod::line::value::ACTIVE);
     }
 }
 
@@ -176,11 +175,11 @@ void Tmc2209::step_loop(int64_t target, bool forward, uint64_t freq_hz) {
     clock_gettime(CLOCK_MONOTONIC, &next);
 
     while (!cancel_flag_.load(std::memory_order_relaxed)) {
-        gpio_request_.set_value(step_offset_, ::gpiod::line::value::ACTIVE);
+        gpio_request_->set_value(step_offset_, ::gpiod::line::value::ACTIVE);
         timespec_add_ns(next, half_period_ns);
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, nullptr);
 
-        gpio_request_.set_value(step_offset_, ::gpiod::line::value::INACTIVE);
+        gpio_request_->set_value(step_offset_, ::gpiod::line::value::INACTIVE);
         timespec_add_ns(next, half_period_ns);
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, nullptr);
 
@@ -200,7 +199,7 @@ void Tmc2209::step_loop(int64_t target, bool forward, uint64_t freq_hz) {
         }
     }
 
-    gpio_request_.set_value(step_offset_, ::gpiod::line::value::INACTIVE);
+    gpio_request_->set_value(step_offset_, ::gpiod::line::value::INACTIVE);
 }
 
 void Tmc2209::set_power(double power_pct, const viam::sdk::ProtoStruct& extra) {
@@ -259,11 +258,11 @@ void Tmc2209::go_for(double rpm, double revolutions, const viam::sdk::ProtoStruc
         std::lock_guard<std::mutex> guard(lock_);
         cancel_stepping();
 
-        gpio_request_.set_value(dir_offset_,
+        gpio_request_->set_value(dir_offset_,
                                 forward ? ::gpiod::line::value::ACTIVE
                                         : ::gpiod::line::value::INACTIVE);
         if (has_enn_) {
-            gpio_request_.set_value(enn_offset_, ::gpiod::line::value::INACTIVE);
+            gpio_request_->set_value(enn_offset_, ::gpiod::line::value::INACTIVE);
         }
 
         cancel_flag_.store(false);

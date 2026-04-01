@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -44,7 +45,7 @@ class Tmc2209 : public viam::sdk::Motor {
     void cancel_stepping();
     void step_loop(int64_t target, bool forward, uint64_t freq_hz);
 
-    ::gpiod::line_request gpio_request_;
+    std::optional<::gpiod::line_request> gpio_request_;
     unsigned int step_offset_;
     unsigned int dir_offset_;
     unsigned int enn_offset_;
