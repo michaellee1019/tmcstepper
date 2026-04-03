@@ -1,11 +1,14 @@
 #include "tmc2209.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <ctime>
 #include <future>
 #include <limits>
 #include <stdexcept>
+#include <string>
 
 namespace tmcstepper {
 
@@ -43,6 +46,97 @@ std::string optional_string_attr(const viam::sdk::ProtoStruct& attrs, const std:
     return val ? *val : default_val;
 }
 
+std::string trim_copy(std::string s) {
+    auto not_space = [](unsigned char c) { return !std::isspace(c); };
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), not_space));
+    s.erase(std::find_if(s.rbegin(), s.rend(), not_space).base(), s.end());
+    return s;
+}
+
+unsigned int parse_pin_offset(const std::string& raw, const std::string& key) {
+    std::string s = trim_copy(raw);
+    if (s.empty()) {
+        throw std::invalid_argument("attribute '" + key + "' must be a non-empty pin string");
+    }
+    char* end = nullptr;
+    unsigned long ul = std::strtoul(s.c_str(), &end, 10);
+    if (end == s.c_str() || *end != '\0') {
+        throw std::invalid_argument("attribute '" + key + "' must be a decimal line offset string");
+    }
+    if (ul > static_cast<unsigned long>(std::numeric_limits<unsigned int>::max())) {
+        throw std::invalid_argument("attribute '" + key + "' line offset out of range");
+    }
+    return static_cast<unsigned int>(ul);
+}
+
+unsigned int pin_attr_to_offset(const viam::sdk::ProtoStruct& attrs, const std::string& key) {
+    auto it = attrs.find(key);
+    if (it == attrs.end()) {
+        throw std::invalid_argument("missing required attribute: " + key);
+    }
+    const auto* str = it->second.get<std::string>();
+    if (str) {
+        return parse_pin_offset(*str, key);
+    }
+    const auto* num = it->second.get<double>();
+    if (num) {
+        if (*num < 0 || *num != std::floor(*num)) {
+            throw std::invalid_argument("attribute '" + key + "' must be a non-negative integer");
+        }
+        return static_cast<unsigned int>(*num);
+    }
+    throw std::invalid_argument("attribute '" + key + "' must be a string (recommended) or number");
+}
+
+std::string normalize_gpio_chip_path(std::string name) {
+    if (name.empty()) {
+        name = "gpiochip0";
+    }
+    if (name.front() != '/') {
+        return "/dev/" + name;
+    }
+    return name;
+}
+
+// Ordered for Raspberry Pi family: BCM boards first, then Pi 5 (RP1) gpiochips.
+::gpiod::chip open_gpio_chip(const std::string& user_chip_trimmed) {
+    static constexpr const char* k_pi_auto_candidates[] = {
+        "/dev/gpiochip0",   // Pi 3 / 4 / Zero 2 W (BCM SoC GPIO)
+        "/dev/gpiochip10",  // Pi 5 40-pin header (RP1, common)
+        "/dev/gpiochip11",  // Pi 5 additional lines on some images
+        "/dev/gpiochip4",   // Alternate numbering on some kernels/images
+        "/dev/gpiochip1",
+    };
+
+    if (!user_chip_trimmed.empty()) {
+        std::string path = normalize_gpio_chip_path(user_chip_trimmed);
+        try {
+            return ::gpiod::chip(path);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(
+                "failed to open GPIO chip '" + path + "': " + std::string(e.what()) +
+                ". Run `ls /dev/gpiochip*` on the robot to pick the correct device. "
+                "If the module runs in Docker, pass that device (e.g. --device /dev/gpiochip0).");
+        }
+    }
+
+    std::string last_error;
+    for (const char* path : k_pi_auto_candidates) {
+        try {
+            return ::gpiod::chip(path);
+        } catch (const std::exception& e) {
+            last_error = e.what();
+        }
+    }
+
+    throw std::runtime_error(
+        "could not open any default GPIO chip (tried /dev/gpiochip0, /dev/gpiochip10, "
+        "/dev/gpiochip11, /dev/gpiochip4, /dev/gpiochip1). Last error: " +
+        last_error +
+        ". Set \"gpio_chip\" to the basename or full path from `ls /dev/gpiochip*`. "
+        "In Docker, mount the matching device(s) into the container.");
+}
+
 void timespec_add_ns(struct timespec& ts, uint64_t ns) {
     ts.tv_nsec += static_cast<long>(ns);
     while (ts.tv_nsec >= 1000000000L) {
@@ -56,8 +150,12 @@ void timespec_add_ns(struct timespec& ts, uint64_t ns) {
 std::vector<std::string> Tmc2209::validate(const viam::sdk::ResourceConfig& cfg) {
     auto attrs = cfg.attributes();
 
-    require_number_attr(attrs, "step_pin");
-    require_number_attr(attrs, "dir_pin");
+    (void)pin_attr_to_offset(attrs, "step_pin");
+    (void)pin_attr_to_offset(attrs, "dir_pin");
+    auto enn_it = attrs.find("enn_pin");
+    if (enn_it != attrs.end()) {
+        (void)pin_attr_to_offset(attrs, "enn_pin");
+    }
 
     auto spr = require_number_attr(attrs, "steps_per_revolution");
     if (spr <= 0) {
@@ -71,23 +169,20 @@ Tmc2209::Tmc2209(const viam::sdk::Dependencies& deps, const viam::sdk::ResourceC
     : Motor(cfg.name()), has_enn_(false), steps_per_revolution_(0), max_rpm_(0) {
     auto attrs = cfg.attributes();
 
-    auto chip_name = optional_string_attr(attrs, "gpio_chip", "gpiochip0");
-    step_offset_ = static_cast<unsigned int>(require_number_attr(attrs, "step_pin"));
-    dir_offset_ = static_cast<unsigned int>(require_number_attr(attrs, "dir_pin"));
+    ::gpiod::chip chip =
+        open_gpio_chip(trim_copy(optional_string_attr(attrs, "gpio_chip", "")));
+
+    step_offset_ = pin_attr_to_offset(attrs, "step_pin");
+    dir_offset_ = pin_attr_to_offset(attrs, "dir_pin");
 
     auto enn_it = attrs.find("enn_pin");
     if (enn_it != attrs.end()) {
-        const auto* val = enn_it->second.get<double>();
-        if (val) {
-            enn_offset_ = static_cast<unsigned int>(*val);
-            has_enn_ = true;
-        }
+        enn_offset_ = pin_attr_to_offset(attrs, "enn_pin");
+        has_enn_ = true;
     }
 
     steps_per_revolution_ = static_cast<int>(require_number_attr(attrs, "steps_per_revolution"));
     max_rpm_ = optional_number_attr(attrs, "max_rpm", 0);
-
-    ::gpiod::chip chip(chip_name);
 
     ::gpiod::line_settings output_settings;
     output_settings.set_direction(::gpiod::line::direction::OUTPUT);

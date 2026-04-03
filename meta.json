@@ -9,7 +9,7 @@
   "entrypoint": "bin/tmcstepper",
   "first_run": "",
   "build": {
-    "build": "conan build . --build missing -s:a compiler.cppstd=17",
+    "build": "conan build . --build missing -s:a compiler.cppstd=17 --lockfile-partial",
     "setup": "",
     "path": "build/Release/module.tar.gz",
     "arch": [
